@@ -2,327 +2,469 @@ diff --git a/C:\Users\tinam\Documents\New project\app.js b/C:\Users\tinam\Docume
 new file mode 100644
 --- /dev/null
 +++ b/C:\Users\tinam\Documents\New project\app.js
-@@ -0,0 +1,351 @@
-+let audioCtx = null;
-+let analyser = null;
-+let dataArray = null;
-+let highpassFilter = null;
-+let wakeLock = null;
-+let mediaStream = null;
+@@ -0,0 +1,518 @@
++'use strict';
 +
-+let isRunning = false;
-+let isCalibrating = false;
-+let startTime = 0;
-+let lastShotTime = 0;
-+let shots = [];
-+let recognition = null;
++const KEYS = {
++  auth: 'shotx.auth.v1',
++  settings: 'shotx.settings.v1',
++  lastRun: 'shotx.lastRun.v1',
++};
 +
-+const AUTH_STORAGE_KEY = 'sx_auth_v3';
-+const RUNS_STORAGE_KEY = 'sx_runs_v1';
-+const SETTINGS_STORAGE_KEY = 'sx_settings_v1';
++const state = {
++  audioCtx: null,
++  analyser: null,
++  dataArray: null,
++  highpass: null,
++  mediaStream: null,
++  wakeLock: null,
++  recognition: null,
++  mode: 'idle',
++  startedAt: 0,
++  lastShotAt: 0,
++  shots: [],
++  raf: 0,
++  timers: [],
++};
 +
-+function byId(id) { return document.getElementById(id); }
-+function clamp(value, min, max, fallback) { const n = Number(value); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback; }
-+function safeText(el, txt) { if (el) el.textContent = String(txt); }
-+function safeJson(key, fallback) { try { return JSON.parse(localStorage.getItem(key) || fallback); } catch { return JSON.parse(fallback); } }
++const $ = (id) => document.getElementById(id);
 +
-+function syncLabels() {
-+  safeText(byId('sens-txt'), `${byId('sens')?.value || 58}%`);
-+  safeText(byId('echo-filter-txt'), `${byId('echo-filter')?.value || 120} ms`);
-+  const par = clamp(byId('par-in')?.value, 0, 60, 0);
-+  safeText(byId('val-par'), par > 0 ? `${par.toFixed(1)}s` : 'OFF');
++function clamp(value, min, max, fallback) {
++  const number = Number(value);
++  if (!Number.isFinite(number)) return fallback;
++  return Math.min(max, Math.max(min, number));
 +}
 +
-+function getMinSplitSeconds() {
-+  return clamp(byId('echo-filter')?.value, 60, 350, 120) / 1000;
++function readJson(key, fallback) {
++  try {
++    const value = JSON.parse(localStorage.getItem(key));
++    return value ?? fallback;
++  } catch {
++    return fallback;
++  }
 +}
 +
-+function saveRuns() { localStorage.setItem(RUNS_STORAGE_KEY, JSON.stringify(shots)); }
-+function loadRuns() {
-+  shots = safeJson(RUNS_STORAGE_KEY, '[]');
-+  if (!Array.isArray(shots)) shots = [];
-+  renderFromShots();
++function writeJson(key, value) {
++  localStorage.setItem(key, JSON.stringify(value));
++}
++
++function setText(id, value) {
++  const el = $(id);
++  if (el) el.textContent = String(value);
++}
++
++function setMode(mode, label) {
++  state.mode = mode;
++  document.body.classList.remove('idle', 'ready', 'waiting', 'running');
++  document.body.classList.add(mode);
++  setText('status-text', label);
++  setText('main-action', mode === 'running' || mode === 'waiting' ? 'Stopp' : 'Start');
++}
++
++function getSettings() {
++  return {
++    profile: $('profile').value,
++    sensitivity: clamp($('sensitivity').value, 50, 98, 58),
++    echoMs: clamp($('echo-filter').value, 60, 350, 120),
++    delaySeconds: clamp($('delay').value, 0.5, 30, 4),
++    parSeconds: clamp($('par').value, 0, 60, 0),
++    voice: $('voice').checked,
++    voiceControl: $('voice-control').checked,
++  };
 +}
 +
 +function saveSettings() {
-+  const settings = {
-+    sens: byId('sens')?.value,
-+    par: byId('par-in')?.value,
-+    delay: byId('delay-in')?.value,
-+    echo: byId('echo-filter')?.value,
-+    weapon: byId('calib-weapon')?.value,
-+    voice: byId('voice-toggle')?.checked,
-+    voiceCtrl: byId('voice-ctrl-toggle')?.checked,
-+  };
-+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
++  writeJson(KEYS.settings, getSettings());
 +}
 +
 +function loadSettings() {
-+  const s = safeJson(SETTINGS_STORAGE_KEY, '{}');
-+  if (s.sens && byId('sens')) byId('sens').value = s.sens;
-+  if (s.par && byId('par-in')) byId('par-in').value = s.par;
-+  if (s.delay && byId('delay-in')) byId('delay-in').value = s.delay;
-+  if (s.echo && byId('echo-filter')) byId('echo-filter').value = s.echo;
-+  if (s.weapon && byId('calib-weapon')) byId('calib-weapon').value = s.weapon;
-+  if (typeof s.voice === 'boolean' && byId('voice-toggle')) byId('voice-toggle').checked = s.voice;
-+  if (typeof s.voiceCtrl === 'boolean' && byId('voice-ctrl-toggle')) byId('voice-ctrl-toggle').checked = s.voiceCtrl;
-+  syncLabels();
++  const settings = readJson(KEYS.settings, null);
++  if (!settings) return;
++  if (settings.profile) $('profile').value = settings.profile;
++  if (settings.sensitivity) $('sensitivity').value = settings.sensitivity;
++  if (settings.echoMs) $('echo-filter').value = settings.echoMs;
++  if (settings.delaySeconds) $('delay').value = settings.delaySeconds;
++  if (settings.parSeconds !== undefined) $('par').value = settings.parSeconds;
++  if (typeof settings.voice === 'boolean') $('voice').checked = settings.voice;
++  if (typeof settings.voiceControl === 'boolean') $('voice-control').checked = settings.voiceControl;
 +}
 +
-+async function hashPassword(password, saltB64) {
-+  const enc = new TextEncoder();
-+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
-+  const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
-+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 210000, hash: 'SHA-256' }, keyMaterial, 256);
-+  return btoa(String.fromCharCode(...new Uint8Array(bits)));
-+}
-+function randomSalt() { return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))); }
-+function skipLocalLock() { localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ localLock: false })); byId('auth-overlay').style.display = 'none'; }
-+function resetLocalLock() { localStorage.removeItem(AUTH_STORAGE_KEY); location.reload(); }
++function updateUi() {
++  const settings = getSettings();
++  setText('sensitivity-text', `${settings.sensitivity}%`);
++  setText('echo-text', `${settings.echoMs} ms`);
++  setText('val-par', settings.parSeconds > 0 ? `${settings.parSeconds.toFixed(1)}s` : 'OFF');
 +
-+async function setFinalPassword() {
-+  const p = byId('new-pass')?.value ?? '';
-+  const c = byId('new-pass-confirm')?.value ?? '';
-+  if (p !== c || p.length < 6) return alert('PIN/Passwort muss mindestens 6 Zeichen haben und übereinstimmen.');
-+  const salt = randomSalt();
-+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ localLock: true, salt, hash: await hashPassword(p, salt) }));
-+  location.reload();
++  const last = state.shots[state.shots.length - 1];
++  setText('timer', last?.time ?? '0.000');
++  setText('val-count', state.shots.length);
++  setText('val-split', last?.split ?? '0.00');
++  renderLog();
 +}
 +
-+async function validateLogin() {
-+  const auth = safeJson(AUTH_STORAGE_KEY, '{}');
-+  const input = byId('login-pass')?.value ?? '';
-+  if (!auth?.hash || !auth?.salt) return;
-+  if (await hashPassword(input, auth.salt) === auth.hash) byId('auth-overlay').style.display = 'none';
-+}
++function renderLog() {
++  const log = $('log');
++  log.textContent = '';
 +
-+function bindSettings() {
-+  ['sens', 'par-in', 'delay-in', 'echo-filter', 'voice-toggle', 'voice-ctrl-toggle', 'calib-weapon'].forEach(id => {
-+    const el = byId(id);
-+    if (!el) return;
-+    el.addEventListener('input', () => { syncLabels(); saveSettings(); });
-+    el.addEventListener('change', () => { syncLabels(); saveSettings(); applyWeaponProfile(); });
-+  });
-+}
-+
-+function applyWeaponProfile() {
-+  if (!highpassFilter) return;
-+  const weapon = byId('calib-weapon')?.value || 'pistol';
-+  highpassFilter.frequency.value = weapon === 'rifle' ? 1700 : weapon === 'pcc' ? 950 : 1300;
-+}
-+
-+async function initAudio() {
-+  if (audioCtx) return;
-+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
-+  const source = audioCtx.createMediaStreamSource(mediaStream);
-+  highpassFilter = audioCtx.createBiquadFilter();
-+  highpassFilter.type = 'highpass';
-+  analyser = audioCtx.createAnalyser();
-+  analyser.fftSize = 256;
-+  analyser.smoothingTimeConstant = 0.2;
-+  dataArray = new Uint8Array(analyser.frequencyBinCount);
-+  applyWeaponProfile();
-+  source.connect(highpassFilter);
-+  highpassFilter.connect(analyser);
-+}
-+
-+async function startCalibration() {
-+  if (!audioCtx) await initAudio();
-+  isCalibrating = true;
-+  byId('calib-btn')?.classList.add('active');
-+  safeText(byId('calib-btn'), 'LISTENING...');
-+  runCalLoop();
-+}
-+
-+function finishCalibration() {
-+  isCalibrating = false;
-+  byId('calib-btn')?.classList.remove('active');
-+  safeText(byId('calib-btn'), 'START CALIBRATION');
-+  saveSettings();
-+}
-+
-+function runCalLoop() {
-+  if (!isCalibrating || !analyser) return;
-+  analyser.getByteTimeDomainData(dataArray);
-+  let max = 0;
-+  for (let i = 0; i < dataArray.length; i++) max = Math.max(max, Math.abs(dataArray[i] - 128) / 128);
-+  if (max > 0.15) {
-+    const threshold = Math.min(Math.max(Math.floor(100 - (max * 85)), 50), 95);
-+    byId('sens').value = String(threshold);
-+    syncLabels();
-+    finishCalibration();
-+  } else {
-+    requestAnimationFrame(runCalLoop);
-+  }
-+}
-+
-+async function startStop() {
-+  if (isRunning) return stop();
-+  try {
-+    if (!audioCtx) await initAudio();
-+    if (audioCtx.state === 'suspended') await audioCtx.resume();
-+    if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-+  } catch (err) {
-+    alert('Audio-Initialisierung fehlgeschlagen. Mikrofonberechtigung prüfen und App per HTTPS oder localhost öffnen.');
++  if (!state.shots.length) {
++    const empty = document.createElement('div');
++    empty.className = 'log-empty';
++    empty.textContent = 'Noch keine Shots';
++    log.append(empty);
 +    return;
 +  }
 +
-+  isRunning = true;
-+  shots = [];
-+  renderFromShots();
-+  safeText(byId('main-action'), 'WAITING...');
-+  const par = clamp(byId('par-in')?.value, 0, 60, 0);
-+  const delay = clamp(byId('delay-in')?.value, 1.5, 30, 4) * 1000;
-+  syncLabels();
-+
-+  setTimeout(() => {
-+    if (!isRunning) return;
-+    beep(0.15);
-+    startTime = performance.now();
-+    lastShotTime = startTime;
-+    safeText(byId('main-action'), 'RUNNING');
-+    if (par > 0) setTimeout(() => isRunning && beep(0.2), par * 1000);
-+    loop();
-+  }, delay);
-+}
-+
-+function loop() {
-+  if (!isRunning || !analyser) return;
-+  analyser.getByteTimeDomainData(dataArray);
-+  let max = 0;
-+  for (let i = 0; i < dataArray.length; i++) max = Math.max(max, Math.abs(dataArray[i] - 128) / 128);
-+  const sens = clamp(byId('sens')?.value, 50, 98, 58);
-+  if (max > (100 - sens) / 100) record();
-+  requestAnimationFrame(loop);
-+}
-+
-+function record() {
-+  const now = performance.now();
-+  const split = (now - lastShotTime) / 1000;
-+  if (split < getMinSplitSeconds()) return;
-+  const total = (now - startTime) / 1000;
-+  lastShotTime = now;
-+  shots.push({ n: shots.length + 1, t: total.toFixed(3), s: split.toFixed(2), ts: new Date().toISOString() });
-+  saveRuns();
-+  renderFromShots();
-+}
-+
-+function renderFromShots() {
-+  const log = byId('log');
-+  if (!log) return;
-+  log.textContent = '';
-+  shots.slice().reverse().forEach(shot => {
++  [...state.shots].reverse().forEach((shot) => {
 +    const row = document.createElement('div');
-+    row.className = 'log-entry';
-+    const a = document.createElement('span'); a.textContent = `#${shot.n}`;
-+    const b = document.createElement('span'); b.textContent = `${shot.t}s`;
-+    const c = document.createElement('span'); c.textContent = `+${shot.s}`;
-+    row.append(a, b, c);
++    row.className = 'log-row';
++    row.append(textSpan(`#${shot.number}`), textSpan(`${shot.time}s`), textSpan(`+${shot.split}`));
 +    log.append(row);
 +  });
-+  const last = shots[shots.length - 1];
-+  safeText(byId('timer'), last?.t || '0.000');
-+  safeText(byId('val-count'), shots.length);
-+  safeText(byId('val-split'), last?.s || '0.00');
 +}
 +
-+function stop() {
-+  isRunning = false;
-+  safeText(byId('main-action'), 'STAND BY');
-+  if (wakeLock) wakeLock.release().catch(() => {});
-+  wakeLock = null;
-+  if (shots.length && byId('voice-toggle')?.checked) speak(`${shots.length} shots, ${shots[shots.length - 1].t} seconds`);
++function textSpan(text) {
++  const span = document.createElement('span');
++  span.textContent = text;
++  return span;
 +}
 +
-+function resetCurrentRun() {
-+  shots = [];
-+  saveRuns();
-+  renderFromShots();
-+  isRunning = false;
-+  safeText(byId('main-action'), 'STAND BY');
++function applyProfile() {
++  if (!state.highpass) return;
++  const profile = $('profile').value;
++  state.highpass.frequency.value = profile === 'rifle' ? 1700 : profile === 'pcc' ? 950 : 1300;
 +}
 +
-+function clearAllTimes() {
-+  if (!confirm('Alle gespeicherten Zeiten wirklich löschen?')) return;
-+  shots = [];
-+  saveRuns();
-+  renderFromShots();
++async function ensureAudio() {
++  if (state.audioCtx) return;
++
++  if (!navigator.mediaDevices?.getUserMedia) {
++    throw new Error('Mikrofon ist in diesem Browser nicht verfügbar.');
++  }
++
++  state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
++  state.mediaStream = await navigator.mediaDevices.getUserMedia({
++    audio: {
++      echoCancellation: false,
++      noiseSuppression: false,
++      autoGainControl: false,
++    },
++  });
++
++  const source = state.audioCtx.createMediaStreamSource(state.mediaStream);
++  state.highpass = state.audioCtx.createBiquadFilter();
++  state.highpass.type = 'highpass';
++
++  state.analyser = state.audioCtx.createAnalyser();
++  state.analyser.fftSize = 512;
++  state.analyser.smoothingTimeConstant = 0.12;
++  state.dataArray = new Uint8Array(state.analyser.frequencyBinCount);
++
++  applyProfile();
++  source.connect(state.highpass);
++  state.highpass.connect(state.analyser);
++}
++
++async function startRun() {
++  try {
++    await ensureAudio();
++    if (state.audioCtx.state === 'suspended') await state.audioCtx.resume();
++    await requestWakeLock();
++  } catch (error) {
++    alert(`${error.message || 'Audio konnte nicht gestartet werden'}\n\nBitte Mikrofon erlauben und ShotX über HTTPS oder localhost öffnen.`);
++    return;
++  }
++
++  clearRunTimers();
++  state.shots = [];
++  updateUi();
++  saveLastRun();
++
++  const settings = getSettings();
++  setMode('waiting', 'Warte auf Startsignal');
++
++  state.timers.push(window.setTimeout(() => {
++    if (state.mode !== 'waiting') return;
++    beep(0.14);
++    state.startedAt = performance.now();
++    state.lastShotAt = state.startedAt;
++    setMode('running', 'Läuft');
++
++    if (settings.parSeconds > 0) {
++      state.timers.push(window.setTimeout(() => {
++        if (state.mode === 'running') beep(0.22);
++      }, settings.parSeconds * 1000));
++    }
++
++    detectLoop();
++  }, settings.delaySeconds * 1000));
++}
++
++function stopRun() {
++  clearRunTimers();
++  cancelAnimationFrame(state.raf);
++  releaseWakeLock();
++  setMode('ready', 'Bereit');
++
++  const settings = getSettings();
++  const last = state.shots[state.shots.length - 1];
++  if (settings.voice && last) speak(`${state.shots.length} shots, ${last.time} seconds`);
++}
++
++function clearRunTimers() {
++  state.timers.forEach((timer) => clearTimeout(timer));
++  state.timers = [];
++}
++
++function detectLoop() {
++  if (state.mode !== 'running' || !state.analyser) return;
++
++  const peak = readPeak();
++  const settings = getSettings();
++  const threshold = (100 - settings.sensitivity) / 100;
++
++  if (peak > threshold) recordShot(settings.echoMs / 1000);
++  state.raf = requestAnimationFrame(detectLoop);
++}
++
++function readPeak() {
++  state.analyser.getByteTimeDomainData(state.dataArray);
++  let peak = 0;
++  for (let i = 0; i < state.dataArray.length; i += 1) {
++    peak = Math.max(peak, Math.abs(state.dataArray[i] - 128) / 128);
++  }
++  return peak;
++}
++
++function recordShot(minSplitSeconds) {
++  const now = performance.now();
++  const split = (now - state.lastShotAt) / 1000;
++  if (split < minSplitSeconds) return;
++
++  const total = (now - state.startedAt) / 1000;
++  state.lastShotAt = now;
++  state.shots.push({
++    number: state.shots.length + 1,
++    time: total.toFixed(3),
++    split: split.toFixed(2),
++    timestamp: new Date().toISOString(),
++  });
++
++  updateUi();
++  saveLastRun();
++}
++
++async function calibrate() {
++  const button = $('calibrate');
++  try {
++    await ensureAudio();
++    if (state.audioCtx.state === 'suspended') await state.audioCtx.resume();
++  } catch (error) {
++    alert(`${error.message || 'Kalibrierung nicht möglich'}\n\nBitte Mikrofon erlauben.`);
++    return;
++  }
++
++  button.classList.add('active');
++  button.textContent = 'Lauschuss abgeben';
++  setMode('ready', 'Kalibrierung aktiv');
++
++  const started = performance.now();
++  const tick = () => {
++    const peak = readPeak();
++    if (peak > 0.12) {
++      const next = Math.round(clamp(100 - peak * 85, 50, 95, 58));
++      $('sensitivity').value = String(next);
++      finishCalibration();
++      return;
++    }
++    if (performance.now() - started > 10000) {
++      finishCalibration();
++      alert('Kein deutlicher Impuls erkannt. Empfindlichkeit manuell einstellen oder erneut kalibrieren.');
++      return;
++    }
++    requestAnimationFrame(tick);
++  };
++  requestAnimationFrame(tick);
++}
++
++function finishCalibration() {
++  $('calibrate').classList.remove('active');
++  $('calibrate').textContent = 'Kalibrieren';
++  updateUi();
++  saveSettings();
++  setMode('ready', 'Bereit');
++}
++
++function resetRun() {
++  clearRunTimers();
++  cancelAnimationFrame(state.raf);
++  state.shots = [];
++  saveLastRun();
++  updateUi();
++  setMode('ready', 'Bereit');
++}
++
++function clearAll() {
++  if (!confirm('Alle gespeicherten Zeiten löschen?')) return;
++  resetRun();
++}
++
++function saveLastRun() {
++  writeJson(KEYS.lastRun, state.shots);
++}
++
++function loadLastRun() {
++  const shots = readJson(KEYS.lastRun, []);
++  state.shots = Array.isArray(shots) ? shots : [];
++}
++
++function exportCsv() {
++  if (!state.shots.length) {
++    alert('Keine Zeiten zum Exportieren.');
++    return;
++  }
++
++  const rows = ['Shot,Time,Split,Timestamp', ...state.shots.map((shot) => `${shot.number},${shot.time},${shot.split},${shot.timestamp}`)];
++  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
++  const link = document.createElement('a');
++  link.href = URL.createObjectURL(blob);
++  link.download = `ShotX_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
++  link.click();
++  URL.revokeObjectURL(link.href);
++}
++
++function exportQr() {
++  if (!state.shots.length) {
++    alert('Keine Zeiten für QR.');
++    return;
++  }
++
++  if (!window.QRCode) {
++    alert('QR ist offline nicht verfügbar. Bitte einmal online öffnen oder die QR-Bibliothek lokal einbinden.');
++    return;
++  }
++
++  const target = $('qrcode');
++  target.textContent = '';
++  new QRCode(target, {
++    text: JSON.stringify({ app: 'ShotX', shots: state.shots }),
++    width: 220,
++    height: 220,
++  });
++  $('qr-overlay').classList.add('open');
 +}
 +
 +function beep(durationSeconds) {
-+  if (!audioCtx) return;
-+  const o = audioCtx.createOscillator();
-+  const g = audioCtx.createGain();
-+  o.connect(g);
-+  g.connect(audioCtx.destination);
-+  g.gain.value = 0.045;
-+  o.frequency.value = 1250;
-+  o.start();
-+  o.stop(audioCtx.currentTime + clamp(durationSeconds, 0.05, 1.0, 0.15));
++  if (!state.audioCtx) return;
++  const oscillator = state.audioCtx.createOscillator();
++  const gain = state.audioCtx.createGain();
++  oscillator.frequency.value = 1250;
++  gain.gain.value = 0.045;
++  oscillator.connect(gain);
++  gain.connect(state.audioCtx.destination);
++  oscillator.start();
++  oscillator.stop(state.audioCtx.currentTime + durationSeconds);
 +}
-+function speak(text) { if ('speechSynthesis' in window) window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); }
 +
-+function initVoiceControl() {
-+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-+  if (!SR) return;
-+  recognition = new SR();
-+  recognition.lang = 'en-US';
-+  recognition.continuous = true;
-+  recognition.interimResults = false;
-+  recognition.onresult = (e) => {
-+    if (!byId('voice-ctrl-toggle')?.checked) return;
-+    const text = e.results[e.results.length - 1][0].transcript.toLowerCase();
-+    if ((text.includes('stand-by') || text.includes('stand by')) && !isRunning) startStop();
-+    if (text.includes('time') && isRunning) stop();
++function speak(text) {
++  if (!('speechSynthesis' in window)) return;
++  window.speechSynthesis.cancel();
++  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
++}
++
++async function requestWakeLock() {
++  if (!('wakeLock' in navigator)) return;
++  try {
++    state.wakeLock = await navigator.wakeLock.request('screen');
++  } catch {
++    state.wakeLock = null;
++  }
++}
++
++function releaseWakeLock() {
++  state.wakeLock?.release().catch(() => {});
++  state.wakeLock = null;
++}
++
++function setupVoiceControl() {
++  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
++  if (!SpeechRecognition) {
++    $('voice-control').disabled = true;
++    return;
++  }
++
++  state.recognition = new SpeechRecognition();
++  state.recognition.lang = 'en-US';
++  state.recognition.continuous = true;
++  state.recognition.interimResults = false;
++  state.recognition.onresult = (event) => {
++    const text = event.results[event.results.length - 1][0].transcript.toLowerCase();
++    if ((text.includes('stand by') || text.includes('stand-by') || text.includes('start')) && state.mode !== 'running' && state.mode !== 'waiting') startRun();
++    if ((text.includes('time') || text.includes('stop')) && (state.mode === 'running' || state.mode === 'waiting')) stopRun();
 +  };
-+  recognition.onend = () => {
-+    if (byId('voice-ctrl-toggle')?.checked) {
-+      try { recognition.start(); } catch {}
++  state.recognition.onend = () => {
++    if ($('voice-control').checked) {
++      try { state.recognition.start(); } catch {}
 +    }
 +  };
-+  byId('voice-ctrl-toggle')?.addEventListener('change', (e) => {
-+    try { e.target.checked ? recognition.start() : recognition.stop(); } catch {}
-+  });
 +}
 +
-+function toggleSaveMode(on) {
-+  byId('save-mode-overlay').style.display = on ? 'flex' : 'none';
-+  byId('main-display').style.opacity = on ? '0.05' : '1';
++function updateVoiceControl() {
++  if (!state.recognition) return;
++  try {
++    if ($('voice-control').checked) state.recognition.start();
++    else state.recognition.stop();
++  } catch {}
 +}
 +
-+function exportCSV() {
-+  if (!shots.length) return;
-+  const csv = `Shot,Time,Split,Timestamp\n${shots.map(s => `${s.n},${s.t},${s.s},${s.ts}`).join('\n')}`;
-+  const b = new Blob([csv], { type: 'text/csv' });
-+  const a = document.createElement('a');
-+  a.href = URL.createObjectURL(b);
-+  a.download = `ShotX_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
-+  a.click();
-+  URL.revokeObjectURL(a.href);
++async function hashPassword(password, saltBase64) {
++  const encoder = new TextEncoder();
++  const material = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
++  const salt = Uint8Array.from(atob(saltBase64), (char) => char.charCodeAt(0));
++  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 210000, hash: 'SHA-256' }, material, 256);
++  return btoa(String.fromCharCode(...new Uint8Array(bits)));
 +}
 +
-+function exportQR() {
-+  if (!shots.length) return;
-+  if (!window.QRCode) return alert('QR-Modul ist offline nicht verfügbar. Bitte einmal online starten oder QR-Code-Bibliothek lokal einbinden.');
-+  byId('qrcode').textContent = '';
-+  new QRCode(byId('qrcode'), { text: shots.map(s => s.t).join('|'), width: 200, height: 200 });
-+  byId('qr-overlay').style.display = 'flex';
++function randomSalt() {
++  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
 +}
 +
-+function initAuthOverlay() {
-+  const overlay = byId('auth-overlay');
-+  const setup = byId('phase-setup');
-+  const login = byId('phase-login');
-+  const a = safeJson(AUTH_STORAGE_KEY, '{}');
-+  if (!overlay || !setup || !login) return;
-+  if (a.localLock && a.hash && a.salt) {
-+    overlay.style.display = 'flex';
-+    setup.style.display = 'none';
-+    login.style.display = 'block';
-+  } else {
-+    overlay.style.display = 'none';
++function setupAuth() {
++  const auth = readJson(KEYS.auth, {});
++  const overlay = $('auth-overlay');
++  if (auth.localLock && auth.hash && auth.salt) {
++    $('auth-setup').hidden = true;
++    $('auth-login').hidden = false;
++    overlay.classList.add('open');
 +  }
++
++  $('save-pin').addEventListener('click', async () => {
++    const pass = $('new-pass').value;
++    const confirmPass = $('new-pass-confirm').value;
++    if (pass.length < 6 || pass !== confirmPass) {
++      alert('PIN/Passwort muss mindestens 6 Zeichen haben und übereinstimmen.');
++      return;
++    }
++    const salt = randomSalt();
++    writeJson(KEYS.auth, { localLock: true, salt, hash: await hashPassword(pass, salt) });
++    overlay.classList.remove('open');
++  });
++
++  $('skip-pin').addEventListener('click', () => {
++    writeJson(KEYS.auth, { localLock: false });
++    overlay.classList.remove('open');
++  });
++
++  $('login').addEventListener('click', async () => {
++    const current = readJson(KEYS.auth, {});
++    const hash = await hashPassword($('login-pass').value, current.salt);
++    if (hash === current.hash) overlay.classList.remove('open');
++    else alert('PIN stimmt nicht.');
++  });
++
++  $('reset-pin').addEventListener('click', () => {
++    localStorage.removeItem(KEYS.auth);
++    overlay.classList.remove('open');
++  });
 +}
 +
 +function registerServiceWorker() {
@@ -332,25 +474,50 @@ new file mode 100644
 +  });
 +}
 +
-+document.addEventListener('DOMContentLoaded', () => {
-+  initAuthOverlay();
-+  loadSettings();
-+  loadRuns();
-+  bindSettings();
-+  initVoiceControl();
-+  byId('main-action')?.addEventListener('click', startStop);
-+  registerServiceWorker();
-+});
++function bindEvents() {
++  $('main-action').addEventListener('click', () => {
++    if (state.mode === 'running' || state.mode === 'waiting') stopRun();
++    else startRun();
++  });
 +
-+Object.assign(window, {
-+  setFinalPassword,
-+  skipLocalLock,
-+  validateLogin,
-+  resetLocalLock,
-+  startCalibration,
-+  exportQR,
-+  exportCSV,
-+  resetCurrentRun,
-+  clearAllTimes,
-+  toggleSaveMode,
-+});
++  $('calibrate').addEventListener('click', calibrate);
++  $('reset').addEventListener('click', resetRun);
++  $('clear').addEventListener('click', clearAll);
++  $('csv').addEventListener('click', exportCsv);
++  $('qr').addEventListener('click', exportQr);
++  $('close-qr').addEventListener('click', () => $('qr-overlay').classList.remove('open'));
++  $('qr-overlay').addEventListener('click', (event) => {
++    if (event.target === $('qr-overlay')) $('qr-overlay').classList.remove('open');
++  });
++
++  ['profile', 'sensitivity', 'echo-filter', 'delay', 'par', 'voice'].forEach((id) => {
++    $(id).addEventListener('input', () => {
++      applyProfile();
++      updateUi();
++      saveSettings();
++    });
++    $(id).addEventListener('change', saveSettings);
++  });
++
++  $('voice-control').addEventListener('change', () => {
++    updateVoiceControl();
++    saveSettings();
++  });
++
++  document.addEventListener('visibilitychange', () => {
++    if (document.visibilityState === 'visible' && (state.mode === 'running' || state.mode === 'waiting')) requestWakeLock();
++  });
++}
++
++function init() {
++  setupAuth();
++  loadSettings();
++  loadLastRun();
++  bindEvents();
++  setupVoiceControl();
++  updateUi();
++  setMode('ready', 'Bereit');
++  registerServiceWorker();
++}
++
++document.addEventListener('DOMContentLoaded', init);
