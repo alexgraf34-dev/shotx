@@ -6,12 +6,26 @@
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "background_color": "#050505",
   "theme_color": "#050505",
   "orientation": "portrait-primary",
   "lang": "de-DE",
   "icons": [
-    { "src": "logo/shotx.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    {
+      "src": "logo/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "logo/app_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }
