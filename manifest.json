@@ -1,0 +1,18 @@
+{
+  "id": "/shotx-pro",
+  "name": "ShotX Ballistic Analysis",
+  "short_name": "ShotX",
+  "description": "Mobiler Schießtimer für Training, Splits und Export.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "orientation": "portrait-primary",
+  "lang": "de-DE",
+  "icons": [
+    { "src": "logo/shotx.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "logo/shotx.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
